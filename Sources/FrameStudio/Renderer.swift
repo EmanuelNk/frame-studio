@@ -156,7 +156,7 @@ final class Renderer: @unchecked Sendable {
     /// - exact: export mode. The canvas is rendered at layout size and the photo is copied pixel-for-pixel.
     /// - scale: preview mode scale factor (ignored when exact).
     func compose(layout: CanvasLayout, exact: Bool, scale: CGFloat = 1,
-                 photo: CGImage, background: CGImage?, style: Style, caption: String?,
+                 photo: CGImage, background: CGImage?, style: Style, texts: [CanvasText],
                  colorSpace: CGColorSpace, bitsPerComponent: Int) -> CGImage? {
         let W = exact ? layout.canvasWidth : max(1, Int((CGFloat(layout.canvasWidth) * scale).rounded()))
         let H = exact ? layout.canvasHeight : max(1, Int((CGFloat(layout.canvasHeight) * scale).rounded()))
@@ -207,8 +207,8 @@ final class Renderer: @unchecked Sendable {
         ctx.interpolationQuality = exact ? .none : .high
         ctx.draw(photo, in: photoRect)
 
-        if hasCanvas, style.captionEnabled, let caption, !caption.isEmpty {
-            Self.drawCaption(caption, style: style, frame: frameRect, width: W, height: H, context: ctx)
+        if hasCanvas, !texts.isEmpty {
+            Self.drawTexts(texts, style: style, frame: frameRect, width: W, height: H, context: ctx)
         }
         return ctx.makeImage()
     }
@@ -231,60 +231,88 @@ final class Renderer: @unchecked Sendable {
         return (cg, bounds)
     }
 
-    /// Draws the camera-settings text above or below the framed photo.
-    static func drawCaption(_ text: String, style: Style, frame: CGRect, width W: Int, height H: Int,
-                            context ctx: CGContext) {
+    /// Draws text lines above or below the framed photo. Offsets arrive already resolved (see CanvasText.lines).
+    /// - Lines in the same spot (position + alignment) stack as consecutive lines in the given order.
+    /// - Lines on the same side with different alignments share a row unless they would collide (after their
+    ///   horizontal offsets), in which case the later one drops to the next row.
+    static func drawTexts(_ items: [CanvasText], style: Style, frame: CGRect, width W: Int, height H: Int,
+                          context ctx: CGContext) {
         let size = CGFloat(style.captionSize) * CGFloat(min(W, H))
         guard size >= 1 else { return }
         let font = CTFontCreateWithName(style.captionFontName as CFString, size, nil)
+        let kern = CGFloat(style.captionSpacing) * size
         let attrs: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): style.captionColor.cgColor,
-            NSAttributedString.Key(kCTKernAttributeName as String): CGFloat(style.captionSpacing) * size,
+            NSAttributedString.Key(kCTKernAttributeName as String): kern,
         ]
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
-        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-        // Drop the trailing letter-spacing so centered/right-aligned text lines up with the frame.
-        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
-            - CGFloat(style.captionSpacing) * size
-        let gap = size * 0.9
+        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+        let lineHeight = (ascent + descent) * 1.25
+        let gap = size * 0.9          // between the frame and the nearest row
+        let minSpace = size * 1.0     // horizontal clearance between lines sharing a row
+        let unitX = CGFloat(W) * 0.5, unitY = CGFloat(H) * 0.5
 
-        var x: CGFloat
-        switch style.captionAlign {
-        case .left: x = frame.minX
-        case .center: x = frame.midX - width / 2
-        case .right: x = frame.maxX - width
-        }
-        var baseline: CGFloat
-        switch style.captionPosition {
-        case .below: baseline = frame.minY - gap - ascent
-        case .above: baseline = frame.maxY + gap + descent
-        }
-        x += CGFloat(style.captionOffsetX) * CGFloat(W) * 0.5
-        baseline -= CGFloat(style.captionOffsetY) * CGFloat(H) * 0.5
+        struct Placed { let line: CTLine; let x: CGFloat; let row: Int; let dx: CGFloat; let dy: CGFloat }
 
         ctx.saveGState()
         ctx.setShouldAntialias(true)
         ctx.setShouldSmoothFonts(false)
         ctx.textMatrix = .identity
-        ctx.textPosition = CGPoint(x: x, y: baseline)
-        CTLineDraw(line, ctx)
+
+        for position in [CaptionPosition.below, .above] {
+            var rows: [[ClosedRange<CGFloat>]] = []
+            var lastRow: [CaptionAlign: Int] = [:]
+            var placed: [Placed] = []
+
+            for item in items where item.position == position && !item.text.isEmpty {
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: item.text, attributes: attrs))
+                // Drop the trailing letter-spacing so centered/right-aligned text lines up with the frame.
+                let width = max(0, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) - kern)
+                let x: CGFloat
+                switch item.align {
+                case .left: x = frame.minX
+                case .center: x = frame.midX - width / 2
+                case .right: x = frame.maxX - width
+                }
+                let dx = CGFloat(item.offsetX) * unitX, dy = CGFloat(item.offsetY) * unitY
+                let span = (x + dx - minSpace / 2)...(x + dx + width + minSpace / 2)
+                var row = lastRow[item.align].map { $0 + 1 } ?? 0
+                while row < rows.count, rows[row].contains(where: { $0.overlaps(span) }) { row += 1 }
+                while rows.count <= row { rows.append([]) }
+                rows[row].append(span)
+                lastRow[item.align] = row
+                placed.append(Placed(line: line, x: x, row: row, dx: dx, dy: dy))
+            }
+
+            let rowCount = rows.count
+            for p in placed {
+                // Reading order is top to bottom on both sides of the photo.
+                var baseline: CGFloat
+                switch position {
+                case .below: baseline = frame.minY - gap - ascent - CGFloat(p.row) * lineHeight
+                case .above: baseline = frame.maxY + gap + descent + CGFloat(rowCount - 1 - p.row) * lineHeight
+                }
+                baseline -= p.dy
+                ctx.textPosition = CGPoint(x: p.x + p.dx, y: baseline)
+                CTLineDraw(p.line, ctx)
+            }
+        }
         ctx.restoreGState()
     }
 
     func renderPreview(photo: CGImage, photoWidth: Int, photoHeight: Int,
-                       background: CGImage?, style: Style, caption: String?, maxPixelSize: CGSize) -> CGImage? {
+                       background: CGImage?, style: Style, texts: [CanvasText], maxPixelSize: CGSize) -> CGImage? {
         let layout = CanvasLayout.make(photoWidth: photoWidth, photoHeight: photoHeight, style: style)
         let scale = min(maxPixelSize.width / CGFloat(layout.canvasWidth),
                         maxPixelSize.height / CGFloat(layout.canvasHeight))
         return compose(layout: layout, exact: false, scale: max(scale, 0.01),
-                       photo: photo, background: background, style: style, caption: caption,
+                       photo: photo, background: background, style: style, texts: texts,
                        colorSpace: ImageIOHelper.workingColorSpace(for: photo), bitsPerComponent: 8)
     }
 
     // MARK: Export
 
-    func export(photoURL: URL, backgroundURL: URL?, style: Style, caption: String?,
+    func export(photoURL: URL, backgroundURL: URL?, style: Style, texts: [CanvasText],
                 options: ExportOptions, to outURL: URL) throws -> ExportResult {
         let (photo, info) = try ImageIOHelper.fullImage(photoURL)
         let layout = CanvasLayout.make(photoWidth: photo.width, photoHeight: photo.height, style: style)
@@ -297,7 +325,7 @@ final class Renderer: @unchecked Sendable {
             bg = try ImageIOHelper.fullImage(backgroundURL).0
         }
         guard let out = compose(layout: layout, exact: true, photo: photo, background: bg, style: style,
-                                caption: caption, colorSpace: cs, bitsPerComponent: bpc)
+                                texts: texts, colorSpace: cs, bitsPerComponent: bpc)
         else { throw ImageError.renderFailed("couldn’t create a \(layout.canvasWidth) × \(layout.canvasHeight) canvas") }
 
         try write(out, to: outURL, options: options, sourceProperties: info.properties)

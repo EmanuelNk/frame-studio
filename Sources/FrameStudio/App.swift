@@ -34,6 +34,23 @@ struct FrameStudioApp: App {
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(state.photos.isEmpty || state.isExporting)
             }
+            CommandMenu("Presets") {
+                ForEach(Array(state.presets.enumerated()), id: \.element.id) { i, p in
+                    if i < 9 {
+                        Button(p.name) { state.applyPreset(p) }
+                            .keyboardShortcut(KeyEquivalent(Character(String(i + 1))), modifiers: .command)
+                    } else {
+                        Button(p.name) { state.applyPreset(p) }
+                    }
+                }
+                if !state.presets.isEmpty { Divider() }
+                Button("Save Current Settings as Preset…") { state.presetPrompt = .save }
+                Button(state.activePreset.map { "Update “\($0.name)”" } ?? "Update Preset") { state.updateActivePreset() }
+                    .disabled(state.activePreset == nil || !state.activePresetIsModified)
+                Divider()
+                Button("Import Presets…") { state.importPresets() }
+                Button("Reset All Settings to Defaults") { state.resetAllSettings() }
+            }
         }
     }
 }

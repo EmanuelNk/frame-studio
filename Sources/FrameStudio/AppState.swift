@@ -24,6 +24,17 @@ struct BackgroundItem: Identifiable {
     let preview: CGImage
 }
 
+enum PresetPrompt: Identifiable, Equatable {
+    case save
+    case rename(UUID)
+    var id: String {
+        switch self {
+        case .save: return "save"
+        case .rename(let id): return "rename-\(id.uuidString)"
+        }
+    }
+}
+
 struct Banner: Identifiable, Equatable {
     let id = UUID()
     let message: String
@@ -37,19 +48,42 @@ final class AppState {
     var photos: [PhotoItem] = []
     var selection: UUID?
     var background: BackgroundItem?
-    var style: Style { didSet { if style != oldValue { persist() } } }
+    var style: Style {
+        didSet {
+            guard style != oldValue else { return }
+            persist()
+        }
+    }
     var exportOptions: ExportOptions { didSet { if exportOptions != oldValue { persist() } } }
     var exportProgress: String?
     var banner: Banner?
     var loadingCount = 0
     /// Per-photo edited camera-settings text (absent = use the photo's EXIF).
     var captions: [UUID: String] = [:]
+    /// Per-photo edited second-line text, kept separately for each source (absent = use the photo's metadata).
+    var infoTexts: [InfoSource: [UUID: String]] = [:]
+
+    // Presets: every setting except the background image and per-photo text edits.
+    var presets: [Preset] = [] { didSet { savePresets() } }
+    var activePresetID: UUID? {
+        didSet { defaults.set(activePresetID?.uuidString, forKey: "presets.active") }
+    }
+    /// Shows the name prompt (save / rename) when set.
+    var presetPrompt: PresetPrompt?
+    /// Shows the delete confirmation when set.
+    var presetPendingDelete: Preset?
 
     private let defaults = UserDefaults.standard
 
     init() {
         style = defaults.data(forKey: "style.v1").flatMap(Style.decodeLenient) ?? Style()
-        exportOptions = (defaults.data(forKey: "export.v1").flatMap { try? JSONDecoder().decode(ExportOptions.self, from: $0) }) ?? ExportOptions()
+        exportOptions = defaults.data(forKey: "export.v1").flatMap { Lenient.decode($0, onto: ExportOptions()) } ?? ExportOptions()
+        if let data = defaults.data(forKey: "presets.v1"),
+           let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] {
+            presets = list.compactMap(Preset.init(jsonObject:))
+        }
+        activePresetID = defaults.string(forKey: "presets.active").flatMap(UUID.init(uuidString:))
+        if let id = activePresetID, !presets.contains(where: { $0.id == id }) { activePresetID = nil }
         if let path = defaults.string(forKey: "background.path"), FileManager.default.fileExists(atPath: path) {
             setBackground(URL(fileURLWithPath: path), resetPosition: false)
         }
@@ -60,12 +94,133 @@ final class AppState {
         if let d = try? JSONEncoder().encode(exportOptions) { defaults.set(d, forKey: "export.v1") }
     }
 
+    // MARK: Presets
+
+    private func savePresets() {
+        if let data = try? JSONSerialization.data(withJSONObject: presets.map(\.jsonObject)) {
+            defaults.set(data, forKey: "presets.v1")
+        }
+    }
+
+    var activePreset: Preset? { presets.first { $0.id == activePresetID } }
+
+    /// True when the current settings differ from the active preset.
+    var activePresetIsModified: Bool {
+        guard let p = activePreset else { return false }
+        return p.style != style || p.export != exportOptions
+    }
+
+    func applyPreset(_ preset: Preset) {
+        style = preset.style
+        exportOptions = preset.export
+        activePresetID = preset.id
+    }
+
+    func saveCurrentAsPreset(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preset = Preset(name: trimmed.isEmpty ? nextPresetName() : trimmed, style: style, export: exportOptions)
+        presets.append(preset)
+        activePresetID = preset.id
+    }
+
+    func updateActivePreset() {
+        guard let i = presets.firstIndex(where: { $0.id == activePresetID }) else { return }
+        presets[i].style = style
+        presets[i].export = exportOptions
+    }
+
+    func renamePreset(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let i = presets.firstIndex(where: { $0.id == id }) else { return }
+        presets[i].name = trimmed
+    }
+
+    func deletePreset(_ id: UUID) {
+        presets.removeAll { $0.id == id }
+        if activePresetID == id { activePresetID = nil }
+    }
+
+    func resetAllSettings() {
+        style = Style()
+        exportOptions = ExportOptions()
+        activePresetID = nil
+    }
+
+    func nextPresetName() -> String {
+        var n = presets.count + 1
+        while presets.contains(where: { $0.name == "Preset \(n)" }) { n += 1 }
+        return "Preset \(n)"
+    }
+
+    func exportPreset(_ preset: Preset) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = preset.name + ".json"
+        panel.message = "Save “\(preset.name)” to a file you can import later or on another Mac"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var object = preset.jsonObject
+        object["app"] = "Frame Studio"
+        object["kind"] = "preset"
+        do {
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url, options: .atomic)
+            banner = Banner(message: "Exported preset “\(preset.name)”", revealURLs: [url])
+        } catch {
+            banner = Banner(message: "Couldn’t save the preset: \(error.localizedDescription)", isError: true)
+        }
+    }
+
+    func importPresets() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose preset files exported from Frame Studio"
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK else { return }
+        var added: [String] = [], failed: [String] = []
+        for url in panel.urls {
+            if let data = try? Data(contentsOf: url),
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               var preset = Preset(jsonObject: object) {
+                preset.id = UUID() // never collide with an existing preset
+                if presets.contains(where: { $0.name == preset.name }) { preset.name += " (imported)" }
+                presets.append(preset)
+                added.append(preset.name)
+            } else {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        if !failed.isEmpty {
+            banner = Banner(message: "Couldn’t read \(failed.joined(separator: ", ")) as a preset", isError: true)
+        } else if !added.isEmpty {
+            banner = Banner(message: added.count == 1 ? "Imported preset “\(added[0])”" : "Imported \(added.count) presets")
+        }
+    }
+
     var selectedPhoto: PhotoItem? {
         photos.first { $0.id == selection } ?? photos.first
     }
 
     func caption(for photo: PhotoItem) -> String {
         captions[photo.id] ?? photo.info.cameraSettings
+    }
+
+    /// The current source's edited text for a photo, if any.
+    func infoOverride(for photo: PhotoItem) -> String? {
+        infoTexts[style.infoSource]?[photo.id]
+    }
+
+    func setInfoOverride(_ text: String?, for photo: PhotoItem) {
+        infoTexts[style.infoSource, default: [:]][photo.id] = text
+    }
+
+    func infoText(for photo: PhotoItem) -> String {
+        infoOverride(for: photo) ?? photo.info.infoDefault(style)
+    }
+
+    /// The text lines drawn for a photo with the current settings.
+    func canvasTexts(for photo: PhotoItem) -> [CanvasText] {
+        CanvasText.lines(style: style, info: photo.info, cameraText: captions[photo.id], infoText: infoOverride(for: photo))
     }
 
     func layout(for photo: PhotoItem) -> CanvasLayout {
@@ -230,7 +385,7 @@ final class AppState {
         let options = self.exportOptions
         let bgURL = background?.url
         let total = jobs.count
-        let captionTexts = jobs.map { caption(for: $0.0) }
+        let jobTexts = jobs.map { canvasTexts(for: $0.0) }
         exportProgress = total > 1 ? "Exporting 1 of \(total)…" : "Exporting…"
         Task.detached(priority: .userInitiated) {
             var done: [URL] = []
@@ -240,7 +395,7 @@ final class AppState {
                 do {
                     try autoreleasepool {
                         _ = try Renderer.shared.export(photoURL: job.0.url, backgroundURL: bgURL, style: style,
-                                                       caption: captionTexts[i], options: options, to: job.1)
+                                                       texts: jobTexts[i], options: options, to: job.1)
                     }
                     done.append(job.1)
                 } catch {

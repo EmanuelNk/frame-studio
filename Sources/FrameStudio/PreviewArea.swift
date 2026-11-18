@@ -10,7 +10,7 @@ final class PreviewRenderer {
         var photoID: UUID
         var backgroundID: UUID?
         var style: Style
-        var caption: String
+        var texts: [CanvasText]
         var pixelWidth: Int
         var pixelHeight: Int
     }
@@ -34,7 +34,7 @@ final class PreviewRenderer {
         running = true
         Task.detached(priority: .userInitiated) {
             let img = Renderer.shared.renderPreview(photo: preview, photoWidth: w, photoHeight: h,
-                                                    background: bg, style: r.style, caption: r.caption,
+                                                    background: bg, style: r.style, texts: r.texts,
                                                     maxPixelSize: CGSize(width: r.pixelWidth, height: r.pixelHeight))
             await MainActor.run {
                 if let img { self.image = img; self.imageRequest = r }
@@ -91,7 +91,7 @@ struct PreviewArea: View {
         let pxH = min(Int(fit.height * displayScale), 3000)
         let req = PreviewRenderer.Request(photoID: photo.id,
                                           backgroundID: state.style.backgroundMode == .image ? state.background?.id : nil,
-                                          style: state.style, caption: state.caption(for: photo),
+                                          style: state.style, texts: state.canvasTexts(for: photo),
                                           pixelWidth: pxW, pixelHeight: pxH)
         // Background move/zoom is handled by a native AppKit view instead of SwiftUI gestures:
         // SwiftUI gestures on a view that re-renders every frame cancel slider drags in the inspector.

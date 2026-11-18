@@ -8,6 +8,11 @@ struct ImageInfo {
     let height: Int
     let orientation: Int
     let properties: [String: Any]
+    /// Lightroom's camera profile from XMP (crs:CameraProfile), e.g. "Camera CLASSIC CHROME".
+    var cameraProfile: String? = nil
+    /// Lightroom profile applied as a look on top of the base profile (crs:Look's crs:Name),
+    /// e.g. "Camera CLASSIC Neg" over a "Camera PROVIA/Standard" base on newer Fuji bodies.
+    var cameraLook: String? = nil
 
     var shortSide: Int { min(width, height) }
     var megapixels: Double { Double(width * height) / 1_000_000 }
@@ -36,6 +41,124 @@ struct ImageInfo {
             parts.append("ISO \(iso)")
         }
         return parts.joined(separator: "   ")
+    }
+
+    private func dict(_ key: CFString) -> [String: Any] { properties[key as String] as? [String: Any] ?? [:] }
+    private func str(_ d: [String: Any], _ key: CFString) -> String? {
+        let raw: String?
+        if let s = d[key as String] as? String { raw = s }
+        else if let a = d[key as String] as? [String] { raw = a.first }
+        else { raw = nil }
+        let t = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t?.isEmpty ?? true) ? nil : t
+    }
+
+    var cameraMake: String { str(dict(kCGImagePropertyTIFFDictionary), kCGImagePropertyTIFFMake) ?? "" }
+    var isFujifilm: Bool { cameraMake.uppercased().contains("FUJI") }
+
+    /// The camera's brand from the EXIF make, without company suffixes:
+    /// "NIKON CORPORATION" → "NIKON", "OLYMPUS OPTICAL CO.,LTD" → "OLYMPUS", "OM Digital Solutions" → "OM SYSTEM".
+    var cameraBrand: String {
+        var words = cameraMake.components(separatedBy: CharacterSet(charactersIn: " ,"))
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+            .filter { !$0.isEmpty }
+        // 1. Legal-entity suffixes.
+        let company: Set<String> = ["CORPORATION", "CORP", "CO", "LTD", "LIMITED", "INC", "COMPANY", "AG", "GMBH", "KK", "LLC", "SA"]
+        while words.count > 1, let last = words.last, company.contains(last.uppercased()) { words.removeLast() }
+        // 2. Well-known makers whose name is more than the brand.
+        let known: [String: String] = [
+            "FUJI PHOTO FILM": "FUJIFILM", "OM DIGITAL SOLUTIONS": "OM SYSTEM", "EASTMAN KODAK": "KODAK",
+            "SAMSUNG TECHWIN": "SAMSUNG", "KONICA MINOLTA CAMERA": "Konica Minolta",
+            "KONICA MINOLTA PHOTO IMAGING": "Konica Minolta", "SEIKO EPSON": "EPSON", "LG ELECTRONICS": "LG",
+            "CASIO COMPUTER": "CASIO", "SANYO ELECTRIC": "SANYO",
+        ]
+        if let k = known[words.joined(separator: " ").uppercased()] { return k }
+        // 3. Descriptive words after the brand ("LEICA CAMERA", "RICOH IMAGING", "OLYMPUS OPTICAL").
+        let descriptive: Set<String> = ["IMAGING", "CAMERA", "CAMERAS", "OPTICAL", "DIGITAL", "SOLUTIONS",
+                                        "ELECTRIC", "ELECTRONICS", "COMPUTER", "PHOTO"]
+        while words.count > 1, let last = words.last, descriptive.contains(last.uppercased()) { words.removeLast() }
+        return words.joined(separator: " ")
+    }
+
+    /// e.g. "FUJIFILM X-E5", "NIKON Z 6_2", "Canon EOS R5", "Phase One IQ4 150MP". The brand is shown once.
+    var cameraModel: String {
+        let brand = cameraBrand
+        let model = str(dict(kCGImagePropertyTIFFDictionary), kCGImagePropertyTIFFModel) ?? ""
+        if model.isEmpty { return brand }
+        if brand.isEmpty { return model }
+        let m = model.uppercased(), b = brand.uppercased()
+        // The model already names the brand: "Canon EOS R5", "KODAK EASYSHARE M550", "OM-1".
+        if m.contains(b) { return model }
+        if let first = b.split(separator: " ").first, m.hasPrefix(first),
+           m.dropFirst(first.count).first.map({ !$0.isLetter }) ?? true {
+            return model
+        }
+        // Models that carry their own brand, e.g. Ricoh's "PENTAX K-3 Mark III".
+        let firstWord = m.split(separator: " ").first.map(String.init) ?? ""
+        if ["PENTAX", "HASSELBLAD", "LEICA", "NIKON", "OLYMPUS", "SIGMA", "PANASONIC", "LUMIX"].contains(firstWord) {
+            return model
+        }
+        return "\(brand) \(model)"
+    }
+
+    /// Copyright notice; falls back to "© <year> <artist>".
+    var copyright: String {
+        let tiff = dict(kCGImagePropertyTIFFDictionary)
+        let iptc = dict(kCGImagePropertyIPTCDictionary)
+        if let c = str(tiff, kCGImagePropertyTIFFCopyright) ?? str(iptc, kCGImagePropertyIPTCCopyrightNotice) {
+            return c
+        }
+        if let artist = str(tiff, kCGImagePropertyTIFFArtist) ?? str(iptc, kCGImagePropertyIPTCByline) {
+            let date = str(dict(kCGImagePropertyExifDictionary), kCGImagePropertyExifDateTimeOriginal) ?? ""
+            let year = date.count >= 4 ? String(date.prefix(4)) : ""
+            return year.isEmpty ? "© \(artist)" : "© \(year) \(artist)"
+        }
+        return ""
+    }
+
+    /// Place name from IPTC (e.g. "Lisbon, Lisboa, Portugal"); falls back to GPS coordinates.
+    var location: String {
+        let iptc = dict(kCGImagePropertyIPTCDictionary)
+        let place = [kCGImagePropertyIPTCCity, kCGImagePropertyIPTCProvinceState, kCGImagePropertyIPTCCountryPrimaryLocationName]
+            .compactMap { str(iptc, $0) }
+        if !place.isEmpty { return place.joined(separator: ", ") }
+        let gps = dict(kCGImagePropertyGPSDictionary)
+        if let lat = (gps[kCGImagePropertyGPSLatitude as String] as? NSNumber)?.doubleValue,
+           let lon = (gps[kCGImagePropertyGPSLongitude as String] as? NSNumber)?.doubleValue {
+            let ns = str(gps, kCGImagePropertyGPSLatitudeRef) ?? "N"
+            let ew = str(gps, kCGImagePropertyGPSLongitudeRef) ?? "E"
+            return String(format: "%.4f° %@, %.4f° %@", lat, ns, lon, ew)
+        }
+        return ""
+    }
+
+    /// Film simulation from Lightroom's Fujifilm camera-matching profile, or "".
+    /// The look (what the user picked) wins over the base profile underneath it.
+    var filmSimulation: String {
+        // Other makers ship look-alike profile names (e.g. Canon/Nikon "Camera Monochrome"); only Fujifilm
+        // has film simulations.
+        guard isFujifilm else { return "" }
+        return cameraLook.flatMap(FilmSimulation.fromCameraProfile)
+            ?? cameraProfile.flatMap(FilmSimulation.fromCameraProfile)
+            ?? ""
+    }
+
+    func metadataText(_ source: InfoSource) -> String {
+        switch source {
+        case .camera: return cameraModel
+        case .filmSimulation: return filmSimulation
+        case .copyright: return copyright
+        case .location: return location
+        case .custom: return ""
+        }
+    }
+
+    /// Default second-line text: the photo's metadata. For film simulation on a Fujifilm photo that
+    /// doesn't record one, the chosen default; other cameras have no film simulations, so they get none.
+    func infoDefault(_ style: Style) -> String {
+        let t = metadataText(style.infoSource)
+        if t.isEmpty, style.infoSource == .filmSimulation, isFujifilm { return style.infoFilmFallback }
+        return t
     }
 }
 
@@ -76,7 +199,13 @@ enum ImageIOHelper {
         else { throw ImageError.unreadable(url) }
         let o = (props[kCGImagePropertyOrientation as String] as? NSNumber)?.intValue ?? 1
         let swap = (5...8).contains(o)
-        return ImageInfo(width: swap ? h : w, height: swap ? w : h, orientation: o, properties: props)
+        var profile: String?, look: String?
+        if let meta = CGImageSourceCopyMetadataAtIndex(src, 0, nil) {
+            profile = CGImageMetadataCopyStringValueWithPath(meta, nil, "crs:CameraProfile" as CFString) as String?
+            look = CGImageMetadataCopyStringValueWithPath(meta, nil, "crs:Look.crs:Name" as CFString) as String?
+        }
+        return ImageInfo(width: swap ? h : w, height: swap ? w : h, orientation: o, properties: props,
+                         cameraProfile: profile, cameraLook: look)
     }
 
     /// A downsampled, orientation-corrected image for previews and thumbnails.

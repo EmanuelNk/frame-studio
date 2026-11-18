@@ -26,8 +26,12 @@ Needs the Xcode Command Line Tools (Swift 5.9+). Produces `Frame Studio.app` nex
 - **Canvas:** None (just photo + border), Color, or Image, plus a 9:16 / 4:5 / 1:1 / … ratio and a Photo Size slider.
 - **Sliders:** double-click a slider (or its label) to reset it to 0, or to its default when 0 is out of range.
 - **Background image:** blur, grain, grain size, brightness, zoom, move horizontally / vertically. You can also drag on the preview to move it and pinch to zoom.
-- **Camera info:** shutter speed, aperture, focal length and ISO read from each photo's EXIF. The text is editable per photo, uses any installed font and style, sits above or below the photo, and has size, letter spacing, alignment, color and X/Y offsets.
+- **Text:** two lines that sit above or below the photo, each with its own alignment and X/Y offsets, sharing any installed font and style, size, letter spacing and color.
+  - *Camera settings:* shutter speed, aperture, focal length and ISO from the photo's EXIF.
+  - *Second line:* camera model, film simulation, copyright, location, or your own text. Camera model, copyright and location come from the photo's metadata. Film simulation is read from Lightroom's Fujifilm camera profile (e.g. "Camera CLASSIC CHROME"), or picked from a dropdown for photos that don't record one.
+  - Text from metadata can be edited per photo. The second line defaults to the spot opposite the camera settings; put both in the same spot to stack them as two lines.
 - **Export:** JPEG / HEIC (quality slider), PNG / TIFF (lossless). Existing files are never overwritten.
+- **Presets:** save every setting and slider (border, shadow, canvas, background adjustments, text, export options) under a name, switch between presets from the inspector or with ⌘1–⌘9, update, rename or delete them, and export/import them as files. A preset never changes the loaded background image or any per-photo text.
 
 ## Quality
 

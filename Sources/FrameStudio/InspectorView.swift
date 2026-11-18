@@ -7,6 +7,11 @@ struct InspectorView: View {
         @Bindable var state = state
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                InspectorSection("Presets", systemImage: "square.stack.3d.up") {
+                    PresetControls()
+                }
+                Divider()
+
                 InspectorSection("Border", systemImage: "square") {
                     SliderRow("Thickness", value: $state.style.borderWidth, in: 0...0.15, default: 0.025) { v in
                         let pct = String(format: "%.1f%%", v * 100)
@@ -53,7 +58,7 @@ struct InspectorView: View {
                 }
                 Divider()
 
-                InspectorSection("Camera Info", systemImage: "camera") {
+                InspectorSection("Text", systemImage: "textformat") {
                     CameraInfoControls()
                 }
                 Divider()
@@ -214,47 +219,22 @@ struct CameraInfoControls: View {
 
     var body: some View {
         @Bindable var state = state
+        let st = state.style
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("Show camera settings", isOn: $state.style.captionEnabled)
-            if state.style.captionEnabled {
-                if state.style.backgroundMode == .none { NeedsCanvasNote() }
+            if (st.captionEnabled || st.infoEnabled) && st.backgroundMode == .none { NeedsCanvasNote() }
+
+            // Line 1: camera settings
+            Toggle("Camera settings", isOn: $state.style.captionEnabled)
+            if st.captionEnabled {
                 if let p = state.selectedPhoto {
-                    VStack(alignment: .leading, spacing: 6) {
-                        TextField("Shutter · aperture · focal length · ISO", text: Binding(
-                            get: { state.caption(for: p) },
-                            set: { state.captions[p.id] = $0 }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(p.info.cameraSettings.isEmpty ? "No camera data in this photo" : "From photo: \(p.info.cameraSettings)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer()
-                            if state.captions[p.id] != nil {
-                                Button("Reset") { state.captions[p.id] = nil }
-                                    .controlSize(.small)
-                            }
-                        }
-                        Text("The text is per photo; the style below applies to all photos.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+                    PerPhotoTextField(
+                        placeholder: "Shutter · aperture · focal length · ISO",
+                        text: Binding(get: { state.caption(for: p) }, set: { state.captions[p.id] = $0 }),
+                        fromPhoto: p.info.cameraSettings,
+                        emptyNote: "No camera settings in this photo",
+                        isEdited: state.captions[p.id] != nil,
+                        reset: { state.captions[p.id] = nil })
                 }
-
-                FontPicker(family: state.style.captionFontFamily, fontName: state.style.captionFontName) { family, name in
-                    state.style.captionFontFamily = family
-                    state.style.captionFontName = name
-                }
-                .equatable()
-
-                let d = Style()
-                SliderRow("Size", value: $state.style.captionSize, in: 0.008...0.06, default: d.captionSize) {
-                    String(format: "%.1f", $0 * 100)
-                }
-                SliderRow("Letter Spacing", value: $state.style.captionSpacing, in: 0...0.5, default: d.captionSpacing)
-
                 Picker("Position", selection: $state.style.captionPosition) {
                     ForEach(CaptionPosition.allCases) { Text($0.title).tag($0) }
                 }
@@ -265,12 +245,149 @@ struct CameraInfoControls: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-
                 SliderRow("Offset X", value: $state.style.captionOffsetX, in: -1...1, default: 0, display: signedPercent)
                 SliderRow("Offset Y", value: $state.style.captionOffsetY, in: -1...1, default: 0, display: signedPercent)
+            }
 
+            Divider()
+
+            // Line 2: camera model, copyright, location or custom text
+            Toggle("Second line", isOn: $state.style.infoEnabled)
+            if st.infoEnabled {
+                Picker("Show", selection: $state.style.infoSource) {
+                    ForEach(InfoSource.allCases) { Text($0.title).tag($0) }
+                }
+                if st.infoSource == .custom {
+                    TextField("Your text, e.g. a title or handle", text: $state.style.infoCustomText)
+                        .textFieldStyle(.roundedBorder)
+                    Text("The same text is used on every photo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let p = state.selectedPhoto {
+                    PerPhotoTextField(
+                        placeholder: st.infoSource.title,
+                        text: Binding(get: { state.infoText(for: p) }, set: { state.setInfoOverride($0, for: p) }),
+                        fromPhoto: p.info.metadataText(st.infoSource),
+                        emptyNote: emptyNote(st, photo: p),
+                        isEdited: state.infoOverride(for: p) != nil,
+                        reset: { state.setInfoOverride(nil, for: p) })
+                    if st.infoSource == .filmSimulation {
+                        // Per-photo choice, for photos that don't record one (or to correct one).
+                        Menu("Choose for this photo") {
+                            ForEach(FilmSimulation.all, id: \.self) { name in
+                                Button(name) { state.setInfoOverride(name, for: p) }
+                            }
+                            Divider()
+                            Button("Use the photo's own value") { state.setInfoOverride(nil, for: p) }
+                        }
+                        .fixedSize()
+                        Picker("Default for Fuji photos without one", selection: $state.style.infoFilmFallback) {
+                            Text("None").tag("")
+                            Divider()
+                            ForEach(FilmSimulation.all, id: \.self) { Text($0).tag($0) }
+                        }
+                        .help("Used for Fujifilm photos whose metadata doesn't record a film simulation and that you haven't set by hand")
+                    }
+                }
+                Picker("Position", selection: $state.style.infoPosition) {
+                    ForEach(InfoPlacement.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Picker("Alignment", selection: $state.style.infoAlign) {
+                    Text("Auto").tag(InfoAlignment.auto)
+                    Image(systemName: CaptionAlign.left.symbol).tag(InfoAlignment.left)
+                    Image(systemName: CaptionAlign.center.symbol).tag(InfoAlignment.center)
+                    Image(systemName: CaptionAlign.right.symbol).tag(InfoAlignment.right)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(placementNote(st))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                SliderRow("Offset X", value: $state.style.infoOffsetX, in: -1...1, default: 0, display: signedPercent)
+                SliderRow("Offset Y", value: $state.style.infoOffsetY, in: -1...1, default: 0, display: signedPercent)
+            }
+
+            if st.captionEnabled || st.infoEnabled {
+                Divider()
+                Text("Style for both lines").font(.callout.weight(.semibold))
+                FontPicker(family: st.captionFontFamily, fontName: st.captionFontName) { family, name in
+                    state.style.captionFontFamily = family
+                    state.style.captionFontName = name
+                }
+                .equatable()
+
+                let d = Style()
+                SliderRow("Size", value: $state.style.captionSize, in: 0.008...0.06, default: d.captionSize) {
+                    String(format: "%.1f", $0 * 100)
+                }
+                SliderRow("Letter Spacing", value: $state.style.captionSpacing, in: 0...0.5, default: d.captionSpacing)
                 Text("Text Color").font(.callout)
                 ColorWheel(color: $state.style.captionColor, showsWheel: false)
+            }
+        }
+    }
+
+    private func emptyNote(_ st: Style, photo p: PhotoItem) -> String {
+        let edited = state.infoOverride(for: p) != nil
+        guard st.infoSource == .filmSimulation else {
+            return edited ? "No \(st.infoSource.title.lowercased()) in this photo; set by hand"
+                          : "No \(st.infoSource.title.lowercased()) in this photo; type your own"
+        }
+        if edited { return "Not in this photo; set by hand" }
+        if !p.info.isFujifilm { return "Not a Fujifilm photo; choose one below or type it" }
+        return st.infoFilmFallback.isEmpty ? "Not in this photo; choose one below or type it"
+                                           : "Not in this photo; using the default (\(st.infoFilmFallback))"
+    }
+
+    private func placementNote(_ st: Style) -> String {
+        func name(_ a: CaptionAlign) -> String {
+            switch a {
+            case .left: return "left"
+            case .center: return "centered"
+            case .right: return "right"
+            }
+        }
+        let now = "\(st.resolvedInfoPosition.title.lowercased()), \(name(st.resolvedInfoAlign))"
+        let shared = st.captionEnabled && st.resolvedInfoPosition == st.captionPosition && st.resolvedInfoAlign == st.captionAlign
+        if shared { return "Now: \(now), as a new line under the camera settings. It moves with them; its offsets nudge it from there." }
+        if st.captionEnabled && st.resolvedInfoPosition == st.captionPosition {
+            return "Now: \(now), on the camera settings' side; it moves up and down with them and drops to its own line if they would touch."
+        }
+        let auto = st.infoPosition == .auto || st.infoAlign == .auto
+        return auto ? "Now: \(now). Auto is opposite the camera settings; pick their spot to stack both lines."
+                    : "Now: \(now). Pick the camera settings' spot to stack both lines."
+    }
+}
+
+/// Per-photo editable text with the photo's own value shown underneath.
+struct PerPhotoTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    let fromPhoto: String
+    let emptyNote: String
+    let isEdited: Bool
+    let reset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.roundedBorder)
+            HStack(alignment: .firstTextBaseline) {
+                Text(fromPhoto.isEmpty ? emptyNote : "From photo: \(fromPhoto)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(fromPhoto.isEmpty ? emptyNote : fromPhoto)
+                Spacer()
+                if isEdited {
+                    Button("Reset", action: reset)
+                        .controlSize(.small)
+                        .help("Go back to the text from the photo")
+                }
             }
         }
     }
@@ -313,5 +430,68 @@ struct FontPicker: View, Equatable {
                 ForEach(members, id: \.self) { Text($0.style).tag($0.name) }
             }
         }
+    }
+}
+
+/// Choose, save, update, rename, delete, import and export presets.
+struct PresetControls: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Menu {
+                if state.presets.isEmpty {
+                    Text("No presets yet")
+                }
+                ForEach(state.presets) { p in
+                    Button {
+                        state.applyPreset(p)
+                    } label: {
+                        if p.id == state.activePresetID { Label(p.name, systemImage: "checkmark") } else { Text(p.name) }
+                    }
+                }
+                Divider()
+                Button("Reset All Settings to Defaults") { state.resetAllSettings() }
+            } label: {
+                Text(menuTitle)
+            }
+            .help("Apply a preset. The background image and per-photo text stay as they are.")
+
+            HStack(spacing: 8) {
+                Button("Save as New…") { state.presetPrompt = .save }
+                Button("Update") { state.updateActivePreset() }
+                    .disabled(state.activePreset == nil || !state.activePresetIsModified)
+                    .help(state.activePreset.map { "Save the current settings into “\($0.name)”" } ?? "Apply or save a preset first")
+                Spacer()
+                Menu {
+                    Button("Rename…") {
+                        if let id = state.activePresetID { state.presetPrompt = .rename(id) }
+                    }
+                    .disabled(state.activePreset == nil)
+                    Button("Delete…") { state.presetPendingDelete = state.activePreset }
+                        .disabled(state.activePreset == nil)
+                    Divider()
+                    Button("Export Preset…") { if let p = state.activePreset { state.exportPreset(p) } }
+                        .disabled(state.activePreset == nil)
+                    Button("Import Presets…") { state.importPresets() }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("More preset actions")
+            }
+            .controlSize(.small)
+
+            Text("A preset keeps every setting and slider. It doesn’t change the background image or any per-photo text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var menuTitle: String {
+        guard let p = state.activePreset else { return "No preset" }
+        return state.activePresetIsModified ? "\(p.name) (edited)" : p.name
     }
 }

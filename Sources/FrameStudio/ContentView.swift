@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var state
     @State private var showInspector = true
+    @State private var presetName = ""
 
     var body: some View {
         NavigationSplitView {
@@ -44,6 +45,54 @@ struct ContentView: View {
             return !images.isEmpty
         }
         .overlay(alignment: .bottom) { bannerView }
+        .alert(promptTitle, isPresented: Binding(
+            get: { state.presetPrompt != nil },
+            set: { if !$0 { state.presetPrompt = nil } }
+        )) {
+            TextField("Preset name", text: $presetName)
+            Button(promptIsRename ? "Rename" : "Save") { commitPrompt() }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { state.presetPrompt = nil }
+        } message: {
+            Text(promptIsRename ? "" : "Saves every setting and slider. The background image isn’t included.")
+        }
+        .onChange(of: state.presetPrompt) { _, prompt in
+            switch prompt {
+            case .save: presetName = state.nextPresetName()
+            case .rename(let id): presetName = state.presets.first { $0.id == id }?.name ?? ""
+            case nil: break
+            }
+        }
+        .confirmationDialog(
+            "Delete the preset “\(state.presetPendingDelete?.name ?? "")”?",
+            isPresented: Binding(get: { state.presetPendingDelete != nil },
+                                 set: { if !$0 { state.presetPendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let p = state.presetPendingDelete { state.deletePreset(p.id) }
+                state.presetPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { state.presetPendingDelete = nil }
+        } message: {
+            Text("Your current settings stay as they are. This can’t be undone.")
+        }
+    }
+
+    private var promptIsRename: Bool {
+        if case .rename = state.presetPrompt { return true }
+        return false
+    }
+
+    private var promptTitle: String { promptIsRename ? "Rename Preset" : "Save Preset" }
+
+    private func commitPrompt() {
+        switch state.presetPrompt {
+        case .save: state.saveCurrentAsPreset(named: presetName)
+        case .rename(let id): state.renamePreset(id, to: presetName)
+        case nil: break
+        }
+        state.presetPrompt = nil
     }
 
     @ViewBuilder

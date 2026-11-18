@@ -156,22 +156,161 @@ struct Style: Codable, Equatable {
     var captionOffsetX: Double = 0
     var captionOffsetY: Double = 0
 
+    // Second text line: camera model, copyright, location or custom text.
+    // Uses the same font, size, spacing and color as the camera settings text.
+    var infoEnabled = false
+    var infoSource: InfoSource = .camera
+    /// Used when `infoSource == .custom`; the same text on every photo.
+    var infoCustomText = ""
+    /// Film simulation for photos whose metadata doesn't record one ("" = none).
+    var infoFilmFallback = ""
+    /// `.auto` = opposite of the camera settings text.
+    var infoPosition: InfoPlacement = .auto
+    var infoAlign: InfoAlignment = .auto
+    var infoOffsetX: Double = 0
+    var infoOffsetY: Double = 0
+
+    var resolvedInfoPosition: CaptionPosition {
+        switch infoPosition {
+        case .auto: return captionPosition == .below ? .above : .below
+        case .above: return .above
+        case .below: return .below
+        }
+    }
+
+    var resolvedInfoAlign: CaptionAlign {
+        switch infoAlign {
+        case .auto:
+            switch captionAlign {
+            case .left: return .right
+            case .right: return .left
+            case .center: return .center
+            }
+        case .left: return .left
+        case .center: return .center
+        case .right: return .right
+        }
+    }
+
     static let photoSizeRange: ClosedRange<Double> = 0.5...1.0
 
     /// Decodes saved settings, filling in defaults for any keys added in newer versions.
     static func decodeLenient(_ data: Data) -> Style? {
-        guard var base = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(Style()))) as? [String: Any],
-              let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-        for (k, v) in saved where base[k] != nil { base[k] = v }
-        guard let merged = try? JSONSerialization.data(withJSONObject: base) else { return nil }
-        return try? JSONDecoder().decode(Style.self, from: merged)
+        Lenient.decode(data, onto: Style())
     }
 }
 
 enum CaptionPosition: String, Codable, CaseIterable, Identifiable {
     case above, below
     var id: Self { self }
-    var title: String { self == .above ? "Above Photo" : "Below Photo" }
+    var title: String { self == .above ? "Above" : "Below" }
+}
+
+enum InfoSource: String, Codable, CaseIterable, Identifiable {
+    case camera, filmSimulation, copyright, location, custom
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .camera: return "Camera model"
+        case .filmSimulation: return "Film simulation"
+        case .copyright: return "Copyright"
+        case .location: return "Location"
+        case .custom: return "Custom text"
+        }
+    }
+}
+
+enum FilmSimulation {
+    /// Fujifilm film simulations, for the dropdown used when a photo doesn't record one.
+    static let all = [
+        "Provia", "Velvia", "Astia", "Classic Chrome", "Reala Ace", "Pro Neg. Hi", "Pro Neg. Std",
+        "Classic Neg.", "Nostalgic Neg.", "Eterna", "Eterna Bleach Bypass",
+        "Acros", "Acros + Ye", "Acros + R", "Acros + G",
+        "Monochrome", "Monochrome + Ye", "Monochrome + R", "Monochrome + G", "Sepia",
+    ]
+
+    /// Maps a Lightroom camera-matching profile name (e.g. "Camera CLASSIC CHROME",
+    /// "Camera PROVIA/Standard", "Camera ACROS+R FILTER") to a film simulation name, or nil.
+    static func fromCameraProfile(_ profile: String) -> String? {
+        let key = profile.uppercased().filter { $0.isLetter || $0 == "+" }
+        guard key.hasPrefix("CAMERA") else { return nil }
+        let k = String(key.dropFirst("CAMERA".count))
+        func filter(_ base: String) -> String {
+            if k.contains("+YE") { return base + " + Ye" }
+            if k.contains("+R") { return base + " + R" }
+            if k.contains("+G") { return base + " + G" }
+            return base
+        }
+        if k.hasPrefix("PROVIA") { return "Provia" }
+        if k.hasPrefix("VELVIA") { return "Velvia" }
+        if k.hasPrefix("ASTIA") { return "Astia" }
+        if k.hasPrefix("CLASSICCHROME") { return "Classic Chrome" }
+        if k.hasPrefix("REALA") { return "Reala Ace" }
+        if k.hasPrefix("PRONEGHI") { return "Pro Neg. Hi" }
+        if k.hasPrefix("PRONEGSTD") { return "Pro Neg. Std" }
+        if k.hasPrefix("CLASSICNEG") { return "Classic Neg." }
+        if k.hasPrefix("NOSTALGIC") { return "Nostalgic Neg." }
+        if k.hasPrefix("ETERNABLEACH") { return "Eterna Bleach Bypass" }
+        if k.hasPrefix("ETERNA") { return "Eterna" }
+        if k.hasPrefix("ACROS") { return filter("Acros") }
+        if k.hasPrefix("MONOCHROME") { return filter("Monochrome") }
+        if k.hasPrefix("SEPIA") { return "Sepia" }
+        return nil
+    }
+}
+
+enum InfoPlacement: String, Codable, CaseIterable, Identifiable {
+    case auto, above, below
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .auto: return "Auto"
+        case .above: return "Above"
+        case .below: return "Below"
+        }
+    }
+}
+
+enum InfoAlignment: String, Codable, CaseIterable, Identifiable {
+    case auto, left, center, right
+    var id: Self { self }
+}
+
+/// One line of text drawn above or below the framed photo.
+struct CanvasText: Equatable {
+    var text: String
+    var position: CaptionPosition
+    var align: CaptionAlign
+    var offsetX: Double
+    var offsetY: Double
+
+    /// The text lines for a photo: camera settings first, then the second line.
+    static func lines(style: Style, info: ImageInfo, cameraText: String?, infoText: String?) -> [CanvasText] {
+        var out: [CanvasText] = []
+        if style.captionEnabled {
+            let t = (cameraText ?? info.cameraSettings).trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty {
+                out.append(CanvasText(text: t, position: style.captionPosition, align: style.captionAlign,
+                                      offsetX: style.captionOffsetX, offsetY: style.captionOffsetY))
+            }
+        }
+        if style.infoEnabled {
+            let base = style.infoSource == .custom ? style.infoCustomText : (infoText ?? info.infoDefault(style))
+            let t = base.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty {
+                // On the camera settings' side the second line moves up/down with them, and in their exact
+                // spot also left/right; its own offsets then nudge it from there. This uses the style, not
+                // the camera line, so photos without camera data place it the same way as the rest of a batch.
+                let pos = style.resolvedInfoPosition, align = style.resolvedInfoAlign
+                let sameSide = style.captionEnabled && pos == style.captionPosition
+                let sameSpot = sameSide && align == style.captionAlign
+                out.append(CanvasText(text: t, position: pos, align: align,
+                                      offsetX: style.infoOffsetX + (sameSpot ? style.captionOffsetX : 0),
+                                      offsetY: style.infoOffsetY + (sameSide ? style.captionOffsetY : 0)))
+            }
+        }
+        return out
+    }
 }
 
 enum CaptionAlign: String, Codable, CaseIterable, Identifiable {
@@ -227,4 +366,57 @@ struct ExportOptions: Codable, Equatable {
     var quality: Double = 1.0
     var keepMetadata = true
     var suffix = "-framed"
+}
+
+// MARK: - Lenient decoding
+
+enum Lenient {
+    /// Decodes a top-level JSON object onto `fallback`'s values: keys missing from the saved data (added in
+    /// newer versions) keep their defaults, and unknown keys are ignored. Returns nil if the result still
+    /// doesn't decode (e.g. an unknown enum value).
+    static func decode<T: Codable>(_ object: [String: Any], onto fallback: T) -> T? {
+        guard var base = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(fallback))) as? [String: Any]
+        else { return nil }
+        for (k, v) in object where base[k] != nil { base[k] = v }
+        guard let merged = try? JSONSerialization.data(withJSONObject: base) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: merged)
+    }
+
+    static func decode<T: Codable>(_ data: Data, onto fallback: T) -> T? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return decode(object, onto: fallback)
+    }
+
+    static func object<T: Encodable>(_ value: T) -> [String: Any] {
+        ((try? JSONSerialization.jsonObject(with: JSONEncoder().encode(value))) as? [String: Any]) ?? [:]
+    }
+}
+
+// MARK: - Presets
+
+/// A named snapshot of every setting and slider: style and export options.
+/// It does not include which background image is loaded, or per-photo text edits.
+struct Preset: Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var style: Style
+    var export: ExportOptions
+
+    var jsonObject: [String: Any] {
+        ["id": id.uuidString, "name": name, "style": Lenient.object(style), "export": Lenient.object(export)]
+    }
+
+    init(id: UUID = UUID(), name: String, style: Style, export: ExportOptions) {
+        self.id = id; self.name = name; self.style = style; self.export = export
+    }
+
+    /// Reads a preset saved by this or an older version of the app.
+    init?(jsonObject o: [String: Any]) {
+        guard let name = o["name"] as? String, let styleObject = o["style"] as? [String: Any],
+              let style = Lenient.decode(styleObject, onto: Style()) else { return nil }
+        self.id = (o["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()
+        self.name = name
+        self.style = style
+        self.export = (o["export"] as? [String: Any]).flatMap { Lenient.decode($0, onto: ExportOptions()) } ?? ExportOptions()
+    }
 }

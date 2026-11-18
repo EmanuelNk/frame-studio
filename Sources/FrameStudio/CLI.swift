@@ -59,7 +59,8 @@ enum CLI {
                 s2.bgBlur = st.bgBlur + Double(n) * 0.01 // defeat any caching
                 let t0 = Date()
                 img = Renderer.shared.renderPreview(photo: thumb, photoWidth: info.width, photoHeight: info.height,
-                                                    background: bgThumb, style: s2, caption: o["caption"] ?? info.cameraSettings,
+                                                    background: bgThumb, style: s2,
+                                                    texts: CanvasText.lines(style: s2, info: info, cameraText: o["caption"], infoText: o["info"]),
                                                     maxPixelSize: CGSize(width: px, height: px))
                 print(String(format: "preview %dx%d in %.0f ms", img?.width ?? 0, img?.height ?? 0, Date().timeIntervalSince(t0) * 1000))
             }
@@ -69,8 +70,10 @@ enum CLI {
         }
 
         let t0 = Date()
-        let r = try Renderer.shared.export(photoURL: photo, backgroundURL: bg, style: st,
-                                           caption: o["caption"] ?? (try ImageIOHelper.info(photo)).cameraSettings,
+        let photoInfo = try ImageIOHelper.info(photo)
+        let texts = CanvasText.lines(style: st, info: photoInfo, cameraText: o["caption"], infoText: o["info"])
+        if !texts.isEmpty { print("texts: " + texts.map { "[\($0.position.rawValue)/\($0.align.rawValue)] \($0.text)" }.joined(separator: "  ")) }
+        let r = try Renderer.shared.export(photoURL: photo, backgroundURL: bg, style: st, texts: texts,
                                            options: ex, to: out)
         print(String(format: "export %dx%d (photo rect %@) in %.2f s", r.width, r.height,
                      NSStringFromRect(r.photoRect), Date().timeIntervalSince(t0)))
