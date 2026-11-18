@@ -1,0 +1,13 @@
+# Build output (recreate with ./build.sh)
+.build/
+Frame Studio.app/
+Resources/AppIcon.icns
+
+# Swift Package Manager / Xcode
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
