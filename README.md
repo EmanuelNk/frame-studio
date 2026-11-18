@@ -3,6 +3,8 @@
 A small macOS app for framing photos: border, blurred background image, drop shadow and camera settings text,
 exported without touching the photo's resolution.
 
+![Frame Studio: a lake photo framed in white on a blurred background, with its camera settings below it; the inspector shows border, canvas and camera-info controls](docs/screenshot.png)
+
 ## Run
 
 Open `Frame Studio.app` (drag it to Applications if you like). You can also drop images onto its Dock icon
