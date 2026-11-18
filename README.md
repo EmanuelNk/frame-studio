@@ -19,8 +19,19 @@ while you install, quit it and reopen it to use the new version. Plain `./build.
 script.
 
 `build.sh` needs the Xcode Command Line Tools (Swift 5.9+). You can also drop images onto the app's Dock icon or use
-Finder → Open With → Frame Studio.
-On first use macOS may ask whether Frame Studio can access the folder your photos are in; click Allow.
+Finder → Open With → Frame Studio. On first use macOS may ask whether Frame Studio can access the folder your photos
+are in; click Allow.
+
+### Updating
+
+```bash
+./update.sh
+```
+
+This pulls the latest code from GitHub, lists what changed, and rebuilds and reinstalls the app; quit and reopen it
+afterwards. If there's nothing new, it says so and stops (use `--force` to reinstall anyway). It never pulls over
+uncommitted local changes. Presets and settings are kept across updates. Because each build is signed locally, macOS
+may ask again for access to your photos folder after an update.
 
 ## What it does
 
