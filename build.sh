@@ -33,7 +33,7 @@ if [ ! -f Resources/AppIcon.icns ]; then
   rm -rf "$TMP"
 fi
 
-echo "→ Assembling $APP…"
+echo "→ Assembling ${APP}…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/FrameStudio"
@@ -42,19 +42,19 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "  (ad-hoc signing skipped)"
 
-echo "✓ Built $(pwd)/$APP"
+echo "✓ Built $(pwd)/${APP}"
 
 if [ "$INSTALL" = 1 ]; then
   DEST="/Applications/$APP"
   if pgrep -x FrameStudio >/dev/null; then
     echo "  Note: Frame Studio is running; quit and reopen it to use the new version."
   fi
-  echo "→ Installing to $DEST…"
+  echo "→ Installing to ${DEST}…"
   # Replace rather than overwrite in place, so a running copy keeps working until it's reopened.
   rm -rf "$DEST"
   ditto "$APP" "$DEST"
   # Make Finder, Spotlight and the Dock pick up the new version and its icon.
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST" >/dev/null 2>&1 || true
   touch "$DEST"
-  echo "✓ Installed $DEST"
+  echo "✓ Installed ${DEST}"
 fi
