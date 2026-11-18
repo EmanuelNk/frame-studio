@@ -10,12 +10,16 @@ camera-info text, and saves the whole look as a preset. Exports keep your photo 
 Requires macOS 14 or later.
 
 ```bash
-./build.sh
-open "Frame Studio.app"
+./build.sh --install
 ```
 
-`build.sh` needs the Xcode Command Line Tools (Swift 5.9+) and creates `Frame Studio.app` next to the script; drag it to
-Applications if you like. You can also drop images onto its Dock icon or use Finder → Open With → Frame Studio.
+This builds `Frame Studio.app` and installs it in `/Applications`, or updates the copy already there. Then open it
+from Applications or Spotlight, and keep it in the Dock with right-click → Options → Keep in Dock. If the app is running
+while you install, quit it and reopen it to use the new version. Plain `./build.sh` only builds the app next to the
+script.
+
+`build.sh` needs the Xcode Command Line Tools (Swift 5.9+). You can also drop images onto the app's Dock icon or use
+Finder → Open With → Frame Studio.
 On first use macOS may ask whether Frame Studio can access the folder your photos are in; click Allow.
 
 ## What it does
